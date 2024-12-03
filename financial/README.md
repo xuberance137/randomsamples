@@ -23,12 +23,11 @@ source venv/bin/activate
 ```
 pip install --upgrade pip
 pip install -r requirements.txt
-
 ```
 
 ### Run the app
 
-1. Create a file `tickers.txt` with one stock ticker on each line in the txt file.
+1. Create a file `tickers.txt` with one stock ticker on each line in the txt file and place in this folder.
 
 2. Run the following from the current folder.
 ```
