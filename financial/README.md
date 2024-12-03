@@ -4,6 +4,8 @@ Live watchlist tracker with essential metrics on a given collection of tickers.
 
 ## Preliminary Steps
 
+You need python3 to run this app locally. If you don't have this installed already, go to [python.org](https://www.python.org/downloads/macos/) to download and run the installer. 
+
 1. Create a virtual env
 
 ```
