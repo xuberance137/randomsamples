@@ -6,26 +6,32 @@ Live watchlist tracker with essential metrics on a given collection of tickers.
 
 You need python3 to run this app locally. If you don't have this installed already, go to [python.org](https://www.python.org/downloads/macos/) to download and run the installer. 
 
-1. Create a virtual env
+1. Install virtualenv
+
+```
+pip install virtualenv
+```
+
+2. Create a virtual env
 
 ```
 virtualenv -p python3 venv
 ```
 
-2. Activate the virtual env
+3. Activate the virtual env
 
 ```
 source venv/bin/activate
 ```
 
-3. Install dependencies
+4. Install dependencies
 
 ```
 pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-### Run the app
+## Run the app
 
 1. Create a file `tickers.txt` with one stock ticker on each line in the txt file and place in this folder.
 
