@@ -45,6 +45,34 @@ python app.py
 App natively refreshes every 30 mins. If you want it to be more frequently refresh, change the REFRESH_CYCLE variable (representing minutes between refresh cycles) at the top of app.py.
 
 
+# Running Scripts
+
+Some scripts like `topAssetOwners.py` use the selenium package that drives off a headless browser. This requires the installation of the chrome driver. These instructions will enable to get started on these when using mac OSX.
+
+1. Install homebrew
+
+```
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+```
+
+2. Install the chrome driver
+
+This will place the chrome driver at `/usr/local/bin`:
+
+```
+brew install chromedriver
+```
+3. Test the chrome driver (enable it to run even when not verified)
+
+```
+open /usr/local/bin/chromedriver
+```
+
+4. Run the script
+
+```
+python topAssetOwners.py 084670702
+```
 
 
 
