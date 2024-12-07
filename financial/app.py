@@ -62,6 +62,22 @@ def fetch_market_data():
                 last_price = "N/A"
                 percent_change = "N/A"
 
+            try:
+                # Fetch historical data for the past 10 trading days
+                hist = stock.history(period="1mo")  # Fetch 2 weeks of data to ensure at least 10 trading days
+                if hist.empty:
+                    return {"error": f"No trading data available for {ticker}"}
+                
+                # Current trading volume (real-time)
+                current_volume = int(stock.info.get('volume', 'N/A')/1000000.0)
+                
+                # Calculate average volume over the past 10 trading days
+                avg_volume_10d = int(hist['Volume'].tail(10).mean()/1000000.0)
+            except Exception as e:
+                print(f"Error fetching price data for {ticker}: {e}")
+                current_volume = "N/A"
+                avg_volume_10d = "N/A"
+
             # Fetch quarterly diluted EPS
             eps_values = ["N/A"] * 5  # Default if no data available
             try:
@@ -78,9 +94,11 @@ def fetch_market_data():
             data.append({
                 "Ticker": ticker,
                 "LAST": last_price,
-                "% CHG": percent_change,
                 "12M Low": trailing_low,
                 "12M High": trailing_high,
+                "% CHG": percent_change,
+                "Vol": current_volume,
+                "10D Vol": avg_volume_10d,
                 "P/E": pe_ratio,
                 "fP/E": forward_pe,
                 "REV GRW": revenue_growth,
@@ -106,7 +124,7 @@ def fetch_market_data():
     df["Max EPS Past"] = df[["EPS Q-1", "EPS Q-2", "EPS Q-3", "EPS Q-4"]].max(axis=1)
 
     # Convert Column_A to numeric type
-    for col in ["P/E", "fP/E", "REV GRW", "BETA", "EPS Q-4", "EPS Q-3", "EPS Q-2", "EPS Q-1", "EPS Q0"]:
+    for col in ["12M Low", "12M High", "P/E", "fP/E", "REV GRW", "BETA", "EPS Q-4", "EPS Q-3", "EPS Q-2", "EPS Q-1", "EPS Q0"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
     
     return df
@@ -156,7 +174,7 @@ def update_table(n_intervals):
     formatted_columns = []
     for col in df.columns:
         if col != "Max EPS Past":  # Exclude "Max EPS Past" from the table
-            if pd.api.types.is_numeric_dtype(df[col]):
+            if pd.api.types.is_numeric_dtype(df[col]) and col !="Vol" and col != "10D Vol":
                 formatted_columns.append(
                     {"name": col, "id": col, "type": "numeric", "format": {"specifier": ".2f"}}
                 )
@@ -200,6 +218,14 @@ def update_table(n_intervals):
                 "if": {
                     "filter_query": "{EPS Q0} > {Max EPS Past}",
                     "column_id": "EPS Q0",
+                },
+                "backgroundColor": "green",
+                "color": "white",
+            },
+            {
+                "if": {
+                    "filter_query": "{Vol} > {10D Vol}",
+                    "column_id": "Vol",
                 },
                 "backgroundColor": "green",
                 "color": "white",
