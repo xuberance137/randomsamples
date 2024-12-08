@@ -4,8 +4,153 @@ import dash_table
 import yfinance as yf
 import pandas as pd
 from datetime import datetime
+import numpy as np
 
 REFRESH_CYCLE = 30 # in minutes
+FEAR_AND_GREED_SMOOTHING_WINDOW = 10 # number of days to get smoother sentiment
+# Path to ChromeDriver (adjust based on your system setup)
+CHROME_DRIVER_PATH = '/usr/local/bin/chromedriver'
+
+def fetch_put_call_ratio(start="2022-01-01", end="2023-01-01"):
+    """
+    Fetches CBOE Put/Call Ratio data directly from a web source.
+    Replace this implementation with scraping or APIs as needed.
+    """
+    # For demonstration, returning a placeholder time series
+    # Replace this with actual data fetching logic
+    dates = pd.date_range(start=start, end=end, freq='D')
+    put_call_ratios = np.random.uniform(0.8, 1.2, len(dates))  # Simulated values
+    return pd.DataFrame({'Date': dates, 'Put/Call': put_call_ratios}).set_index('Date')
+
+
+
+# Define the function
+def fetch_put_call_ratio(start="2022-01-01", end="2023-01-01"):
+    """
+    Fetches CBOE Put/Call Ratio data dynamically using Selenium and returns it as a time series.
+
+    Returns:
+    - DataFrame with Date as index and Put/Call Ratio as a column.
+    """
+    # Configure Selenium WebDriver (ensure you have ChromeDriver installed)
+    chrome_options = Options()
+    chrome_options.add_argument("--headless")  # Run in headless mode (no GUI)
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--no-sandbox")
+
+    print("Loading Driver")
+    service = Service(CHROME_DRIVER_PATH)  # Update with your ChromeDriver path
+    driver = webdriver.Chrome(service=service, options=chrome_options)
+    print("Loaded Driver")
+    
+    try:
+        # Open the CBOE page
+        url = "https://www.cboe.com/us/options/market_statistics/daily/"
+        driver.get(url)
+        time.sleep(5)  # Allow time for JavaScript to render the page
+
+        # Locate the table containing the Put/Call Ratio
+        table_element = driver.find_element(By.XPATH, '//table[contains(@class, "bds-table")]')  # Adjusted XPath
+        html_content = table_element.get_attribute('outerHTML')
+
+        print("Loaded Page")
+        # Parse the table using pandas
+        table = pd.read_html(html_content)[0]
+        table = table.rename(columns={"Date": "Date", "Equity Put/Call Ratio": "Put/Call"})
+        table["Date"] = pd.to_datetime(table["Date"])
+        table.set_index("Date", inplace=True)
+
+        print("Loaded Table")
+        # Return the Put/Call Ratio as a DataFrame
+        put_call_data = table[["Put/Call"]].copy()
+        return put_call_data[(put_call_data.index >= start) & (put_call_data.index <= end)]
+    except Exception as e:
+        print(f"Error fetching Put/Call Ratio: {e}")
+        return pd.DataFrame()
+    finally:
+        driver.quit()
+
+
+def calculate_fear_and_greed(start_date="2022-01-01", end_date="2023-01-01"):
+    """
+    Calculates the Fear and Greed Index based on various metrics
+    including stock price momentum, strength, breadth, put/call ratio,
+    market volatility, safe haven demand, and junk bond demand.
+
+    Parameters:
+    - start_date: str, start date of analysis
+    - end_date: str, end date of analysis
+
+    Returns:
+    - DataFrame with Date and Fear and Greed Index
+    """
+    data = pd.DataFrame()
+
+    # 1. Stock Price Momentum (S&P 500 vs. 125-day moving average)
+    sp500 = yf.Ticker("^GSPC").history(start=start_date, end=end_date)
+    sp500.index = sp500.index.tz_localize(None)  # Remove timezone information
+    sp500['Momentum'] = sp500['Close'] - sp500['Close'].rolling(125).mean()
+    data['Momentum'] = sp500['Momentum']
+
+    # 2. Stock Price Strength (Net new highs vs. lows)
+    data['Strength'] = sp500['Close'].diff()
+
+    # 3. Stock Price Breadth (Advancing vs. Declining stocks)
+    data['Breadth'] = np.sign(sp500['Close'].pct_change())
+
+    # 4. Put/Call Ratio (Options market sentiment)
+    # put_call_data = fetch_put_call_ratio(start=start_date, end=end_date)
+    # #put_call_data.index = put_call_data.index.tz_localize(None)  # Remove timezone
+    # data = data.merge(put_call_data, left_index=True, right_index=True, how='left')
+
+    # 5. Market Volatility (VIX index)
+    vix = yf.Ticker("^VIX").history(start=start_date, end=end_date)
+    vix.index = vix.index.tz_localize(None)  # Remove timezone
+    data['Volatility'] = vix['Close']
+
+    # 6. Safe Haven Demand (Bonds vs. Stocks)
+    tlt = yf.Ticker("TLT").history(start=start_date, end=end_date)
+    tlt.index = tlt.index.tz_localize(None)  # Remove timezone
+    data['Safe Haven'] = tlt['Close'].pct_change() - sp500['Close'].pct_change()
+
+    # 7. Junk Bond Demand (Spread between junk and investment-grade bonds)
+    hyg = yf.Ticker("HYG").history(start=start_date, end=end_date)
+    hyg.index = hyg.index.tz_localize(None)  # Remove timezone
+    lqd = yf.Ticker("LQD").history(start=start_date, end=end_date)
+    lqd.index = lqd.index.tz_localize(None)  # Remove timezone
+    data['Junk Spread'] = hyg['Close'] - lqd['Close']
+
+    # Normalize all metrics to scale 0-1
+    for column in ['Momentum', 'Strength', 'Breadth', 'Volatility', 'Safe Haven', 'Junk Spread']:
+        if column in data:
+            data[column] = (data[column] - data[column].min()) / (data[column].max() - data[column].min())
+
+    # Compute the Fear and Greed Index as an average of all components
+    data['Fear and Greed Index'] = data[['Momentum', 'Strength', 'Breadth',
+                                         'Volatility', 'Safe Haven', 'Junk Spread']].mean(axis=1)
+
+    data = data.reset_index().rename(columns={'index': 'Date'})
+    return data[['Date', 'Fear and Greed Index']]
+
+def calculate_smoothed_fear_and_greed(fear_greed_data, window=5):
+    """
+    Calculates a smoothed version of the Fear and Greed Index using a moving average.
+
+    Parameters:
+    - fear_greed_data: DataFrame containing the Fear and Greed Index time series.
+    - window: int, the window size for the moving average (default is 10).
+
+    Returns:
+    - DataFrame with an additional column for the smoothed Fear and Greed Index.
+    """
+    # Add a smoothed column using a rolling mean
+    fear_greed_data['Smoothed Fear and Greed Index'] = (
+        fear_greed_data['Fear and Greed Index']
+        .rolling(window=window, min_periods=1)
+        .mean()
+    )
+    return fear_greed_data
+
 
 # Define a function to fetch data
 def fetch_market_data():
@@ -152,6 +297,18 @@ app.layout = html.Div([
             'marginBottom': '20px'
         }
     ),
+    html.Div(
+        id="plots-container",
+        style={
+            "display": "flex",
+            "justifyContent": "space-around",
+            "marginBottom": "30px"
+        },
+        children=[
+            dcc.Graph(id="time-series-plot", style={"width": "48%"}),
+            dcc.Graph(id="histogram-plot", style={"width": "48%"})
+        ]
+    ),
     html.Div(id="table-container"),
     dcc.Interval(
         id="interval-component",
@@ -162,13 +319,135 @@ app.layout = html.Div([
 
 # Callback to update the table and timestamp
 @app.callback(
-    [Output("table-container", "children"),
-     Output("last-updated", "children")],
+    [
+        Output("table-container", "children"),
+        Output("last-updated", "children"),
+        Output("time-series-plot", "figure"),
+        Output("histogram-plot", "figure")
+    ],
     [Input("interval-component", "n_intervals")]
 )
 def update_table(n_intervals):
     # Fetch the latest data
     df = fetch_market_data()
+
+    # Prepare the Fear and Greed Index data
+    fear_greed_data = calculate_fear_and_greed(start_date="2021-12-01", end_date=datetime.now().strftime("%Y-%m-%d"))
+    smoothed_data = calculate_smoothed_fear_and_greed(fear_greed_data, window=FEAR_AND_GREED_SMOOTHING_WINDOW)
+
+    # Create a time series plot for the smoothed Fear and Greed Index
+    time_series_fig = {
+        "data": [
+            {
+                "x": smoothed_data["Date"],
+                "y": smoothed_data["Smoothed Fear and Greed Index"],
+                "type": "scatter",
+                "mode": "lines",
+                "name": "Smoothed Fear and Greed Index",
+                "line": {"color": "orange"}
+            }
+        ],
+        "layout": {
+            "title": "Smoothed Fear and Greed Index (Past 2 Years)",
+            "xaxis": {"title": "Date"},
+            "yaxis": {"title": "Fear and Greed Index"},
+            "template": "plotly_white",
+            "shapes": [  # Add horizontal reference lines
+                {
+                    "type": "line",
+                    "x0": smoothed_data["Date"].min(),
+                    "x1": smoothed_data["Date"].max(),
+                    "y0": 0.5,
+                    "y1": 0.5,
+                    "line": {"dash": "dash", "color": "gray"},
+                    "xref": "x",
+                    "yref": "y",
+                    "name": "Neutral Zone (0.5)"
+                },
+                {
+                    "type": "line",
+                    "x0": smoothed_data["Date"].min(),
+                    "x1": smoothed_data["Date"].max(),
+                    "y0": 0.45,
+                    "y1": 0.45,
+                    "line": {"dash": "dash", "color": "red"},
+                    "xref": "x",
+                    "yref": "y",
+                    "name": "Fear Threshold (0.45)"
+                },
+                {
+                    "type": "line",
+                    "x0": smoothed_data["Date"].min(),
+                    "x1": smoothed_data["Date"].max(),
+                    "y0": 0.55,
+                    "y1": 0.55,
+                    "line": {"dash": "dash", "color": "green"},
+                    "xref": "x",
+                    "yref": "y",
+                    "name": "Greed Threshold (0.55)"
+                }
+            ]
+        }
+    }
+
+    # Create a histogram plot for daily Fear and Greed Index
+    current_value = fear_greed_data["Fear and Greed Index"].iloc[-1]
+    
+    histogram_fig = {
+        "data": [
+            {
+                "x": fear_greed_data["Fear and Greed Index"],
+                "type": "histogram",
+                "name": "Daily Fear and Greed Index",
+                "opacity": 0.7,
+                "marker": {
+                    "color": "lightblue", # Set histogram color to light blue
+                    "line": {
+                        "color": "white",  # Set the border color to white
+                        "width": 1  # Set the border width
+                    }
+                }
+            }
+        ],
+        "layout": {
+            "title": "Daily Fear and Greed Index Distribution",
+            "xaxis": {"title": "Fear and Greed Index"},
+            "yaxis": {"title": "Frequency"},
+            "template": "plotly_white",
+            "shapes": [  # Add a vertical line for the current day's value
+                {
+                    "type": "line",
+                    "x0": current_value,
+                    "x1": current_value,
+                    "y0": 0,
+                    "y1": 1,
+                    "xref": "x",
+                    "yref": "paper",  # Use "paper" to span the full y-axis
+                    "line": {"color": "red", "width": 4},
+                    "name": f"Today: {current_value:.2f}"
+                }
+            ],
+            "annotations": [
+                {
+                    "x": current_value,
+                    "y": 1,
+                    "xref": "x",
+                    "yref": "paper",
+                    "text": f"Today: {current_value:.2f}",
+                    "showarrow": True,
+                    "arrowhead": 2,
+                    "ax": 0,
+                    "ay": -30,
+                    "font": {
+                        "color": "red",
+                        "size": 16,  # Increase font size
+                        "family": "Tahoma",
+                        "weight": "bold"  # Make the text bold
+                    }
+                }
+            ]
+        }
+    }
 
     # Identify numeric columns and set their format
     formatted_columns = []
@@ -236,7 +515,7 @@ def update_table(n_intervals):
     # Get the current timestamp
     timestamp = f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
 
-    return table, timestamp
+    return table, timestamp, time_series_fig, histogram_fig
 
 # Run the app
 if __name__ == "__main__":
