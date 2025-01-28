@@ -1,6 +1,5 @@
 import dash
-from dash import dcc, html, Input, Output
-import dash_table
+from dash import dcc, html, Input, Output, dash_table
 import yfinance as yf
 import pandas as pd
 from datetime import datetime
@@ -197,7 +196,19 @@ def fetch_market_data():
                     last_price = last_data["Close"].iloc[-1]
                 else:
                     last_price = "N/A"
-                open_price = stock.info.get("regularMarketOpen", "N/A")
+                
+                # Fetch historical data (ensure enough data is retrieved)
+                hist = stock.history(period="5d")  # Fetch last 5 days to ensure a valid close price
+
+                # Ensure there is enough data and get the last valid close price
+                if "Close" in hist.columns and len(hist) > 1:
+                    last_close_price = hist["Close"].dropna().iloc[-2]  # Get the most recent valid close price
+                else:
+                    last_close_price = None  # Handle missing data case
+
+                # Set the open price using the last close price
+                open_price = last_close_price if last_close_price is not None else "N/A"
+
                 if last_price != "N/A" and open_price != "N/A" and open_price != 0:
                     percent_change = ((last_price - open_price) / open_price) * 100
                 else:
