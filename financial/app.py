@@ -242,7 +242,11 @@ def fetch_market_data():
 
                 # Check if diluted EPS is available in the data
                 if "Diluted EPS" in quarterly_financials.index:
-                    eps_values = quarterly_financials.loc["Diluted EPS"].iloc[:5].tolist()
+                    if len(quarterly_financials.loc["Diluted EPS"]) < 5:
+                        esp_values_short = quarterly_financials.loc["Diluted EPS"].tolist()
+                        eps_values =  esp_values_short + ["N/A"] * (5 - len(esp_values_short))
+                    else:
+                        eps_values = quarterly_financials.loc["Diluted EPS"].iloc[:5].tolist()
             except Exception as e:
                 print(f"Error fetching quarterly EPS for {ticker}: {e}")
 
