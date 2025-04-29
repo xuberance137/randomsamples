@@ -4,11 +4,80 @@ import yfinance as yf
 import pandas as pd
 from datetime import datetime
 import numpy as np
+from pytrends.request import TrendReq
+import requests
+from datetime import datetime, timedelta
+from textblob import TextBlob
+from keys import NEWSAPI_KEY
+import time
+import json
+import os
+from pytz import timezone
 
 REFRESH_CYCLE = 30 # in minutes
 FEAR_AND_GREED_SMOOTHING_WINDOW = 10 # number of days to get smoother sentiment
+CACHE_FILE = "./data/fomo_index_cache.json"
+PACIFIC_TIME = timezone('US/Pacific')
 # Path to ChromeDriver (adjust based on your system setup)
 CHROME_DRIVER_PATH = '/usr/local/bin/chromedriver'
+
+def should_run_fomo_computation():
+    """
+    Check if we should run the FOMO index computation based on the current time.
+    Returns True if it's 7 AM Pacific Time and we haven't run today, False otherwise.
+    """
+    # Get current time in Pacific timezone
+    now = datetime.now(PACIFIC_TIME)
+    
+    # Check if cache file exists
+    if not os.path.exists(CACHE_FILE):
+        return True
+    
+    try:
+        with open(CACHE_FILE, 'r') as f:
+            cache = json.load(f)
+            # Parse the ISO format string directly into a timezone-aware datetime
+            last_run_time = datetime.fromisoformat(cache['last_run_time'])
+            
+            # Check if we've run today
+            if last_run_time.date() == now.date():
+                return False
+            
+            # Check if it's 7 AM
+            return now.hour == 7
+    except Exception as e:
+        print(f"Error reading cache: {e}")
+        return True
+
+def save_fomo_results(results):
+    """
+    Save FOMO index results to cache file.
+    """
+    try:
+        cache_data = {
+            'last_run_time': datetime.now(PACIFIC_TIME).isoformat(),
+            'results': results
+        }
+        with open(CACHE_FILE, 'w') as f:
+            json.dump(cache_data, f)
+    except Exception as e:
+        print(f"Error saving cache: {e}")
+
+def load_fomo_results():
+    """
+    Load FOMO index results from cache file.
+    Returns None if cache doesn't exist or is invalid.
+    """
+    try:
+        if not os.path.exists(CACHE_FILE):
+            return None
+        
+        with open(CACHE_FILE, 'r') as f:
+            cache = json.load(f)
+            return cache['results']
+    except Exception as e:
+        print(f"Error loading cache: {e}")
+        return None
 
 def fetch_put_call_ratio(start="2022-01-01", end="2023-01-01"):
     """
@@ -20,7 +89,6 @@ def fetch_put_call_ratio(start="2022-01-01", end="2023-01-01"):
     dates = pd.date_range(start=start, end=end, freq='D')
     put_call_ratios = np.random.uniform(0.8, 1.2, len(dates))  # Simulated values
     return pd.DataFrame({'Date': dates, 'Put/Call': put_call_ratios}).set_index('Date')
-
 
 
 # Define the function
@@ -69,6 +137,160 @@ def fetch_put_call_ratio(start="2022-01-01", end="2023-01-01"):
     finally:
         driver.quit()
 
+def compute_momentum_score(ticker):
+    """
+    Calculate the Momentum Score based on 7-day price change.
+    
+    Parameters:
+    - ticker: str, the stock ticker symbol
+    
+    Returns a momentum score between 0-20.
+    """
+    try:
+        stock = yf.Ticker(ticker)
+        data = stock.history(period="7d")
+        
+        # Check if data is empty
+        if data.empty:
+            print(f"No data available for {ticker}")
+            momentum_score = 10
+        else:
+            # Get close prices
+            close_prices = data['Close'].dropna()
+            
+            # Check if we have enough valid data points
+            if len(close_prices) < 2:
+                print(f"Not enough valid data points for {ticker}")
+                momentum_score = 10
+            else:
+                # Get first and last valid prices
+                start_price = float(close_prices.iloc[0])
+                end_price = float(close_prices.iloc[-1])
+                
+                # Calculate percentage change
+                change = (end_price - start_price) / start_price
+                
+                # Normalize to [-100, 100] range
+                momentum_score = min(max(change*100, -100), 100) 
+                print(f"Momentum score for {ticker}: {momentum_score:.2f}")
+    except Exception as e:
+        print(f"Error calculating momentum for {ticker}: {str(e)}")
+        momentum_score = 10  # Neutral fallback
+
+    return momentum_score
+
+def compute_fomo_index(ticker, keyword):
+    """
+    Approximate the FOMO index based on:
+    1. Asset momentum (7-day price change)
+    2. News sentiment (headline polarity)
+    3. Google Trends interest in trading behavior
+    
+    Parameters:
+    - ticker: str, the stock ticker symbol
+    - keyword: str, the keyword to use for sentiment and trends analysis
+    
+    Returns a composite score between 0-100.
+    """
+    # --- 1. Momentum ---
+    try:
+        stock = yf.Ticker(ticker)
+        data = stock.history(period="7d")
+        
+        # Check if data is empty
+        if data.empty:
+            print(f"No data available for {ticker}")
+            momentum_score = 10
+        else:
+            # Get close prices
+            close_prices = data['Close'].dropna()
+            
+            # Check if we have enough valid data points
+            if len(close_prices) < 2:
+                print(f"Not enough valid data points for {ticker}")
+                momentum_score = 10
+            else:
+                # Get first and last valid prices
+                start_price = float(close_prices.iloc[0])
+                end_price = float(close_prices.iloc[-1])
+                
+                # Calculate percentage change
+                change = (end_price - start_price) / start_price
+                
+                # Normalize to 0-20 range
+                momentum_score = min(max((change * 100), -10), 10) + 10
+                print(f"Momentum score for {ticker}: {momentum_score:.2f}")
+    except Exception as e:
+        print(f"Error calculating momentum for {ticker}: {str(e)}")
+        momentum_score = 10  # Neutral fallback
+
+    # --- 2. News Sentiment (last 5 headlines) ---
+    try:
+        api_key = NEWSAPI_KEY
+        # Wrap keyword in quotation marks for exact phrase matching
+        quoted_keyword = f'"{keyword}"'
+        url = f"https://newsapi.org/v2/everything?q={quoted_keyword}&sortBy=publishedAt&language=en&pageSize=5&apiKey={api_key}"
+        headlines = requests.get(url).json().get("articles", [])
+        sentiment = [TextBlob(article['title']).sentiment.polarity for article in headlines]
+        avg_sentiment = sum(sentiment) / len(sentiment) if sentiment else 0
+        sentiment_score = min(max((avg_sentiment + 1) * 10, 0), 20)  # Normalize to 0-20
+        print(f"Sentiment score for {ticker}: {sentiment_score:.2f}")
+    except Exception as e:
+        print(f"Error calculating sentiment for {ticker}: {str(e)}")
+        sentiment_score = 10  # Neutral fallback
+
+    # --- 3. Google Trends for keyword ---
+    max_retries = 3
+    base_delay = 5  # Base delay in seconds
+    trends_score = 10  # Default value
+    
+    for attempt in range(max_retries):
+        try:
+            # Add exponential backoff delay
+            if attempt > 0:
+                delay = base_delay * (2 ** (attempt - 1))
+                print(f"Retrying Google Trends request for {ticker} after {delay} seconds (attempt {attempt + 1}/{max_retries})")
+                time.sleep(delay)
+            
+            # Initialize pytrends with timeout and proper parameters
+            pytrends = TrendReq(hl='en-US', tz=360, timeout=(10,25))
+            
+            # Build payload
+            pytrends.build_payload([keyword], timeframe='now 7-d')
+            
+            # Get interest over time
+            interest = pytrends.interest_over_time()
+            
+            if interest.empty:
+                print(f"No trends data available for {ticker}")
+                break
+                
+            # Calculate trends score
+            avg_interest = interest[keyword].mean()
+            trends_score = avg_interest / 5  # Normalize approx to 0-20
+            print(f"Trends score for {ticker}: {trends_score:.2f}")
+            break  # Success, exit retry loop
+            
+        except Exception as e:
+            if "429" in str(e):
+                if attempt < max_retries - 1:
+                    continue  # Try again with backoff
+                else:
+                    print(f"Max retries reached for {ticker}. Using default trends score.")
+            else:
+                print(f"Error processing trends for {ticker}: {str(e)}")
+                break  # Other errors, don't retry
+
+    # --- Composite FOMO Index (0-100 scale) ---
+    fomo_index = round((momentum_score + sentiment_score + trends_score) * (100 / 60), 2)
+    return {
+        "ticker": ticker,
+        "keyword": keyword,
+        "momentum_score": momentum_score,
+        "sentiment_score": sentiment_score,
+        "trends_score": trends_score,
+        "fomo_index": fomo_index
+    }
 
 def calculate_fear_and_greed(start_date="2022-01-01", end_date="2023-01-01"):
     """
@@ -154,17 +376,66 @@ def calculate_smoothed_fear_and_greed(fear_greed_data, window=5):
 # Define a function to fetch data
 def fetch_market_data():
     """
-    Fetches market data for tickers in 'tickers-shortlist.txt' and returns a DataFrame.
+    Fetches market data for tickers in 'tickers-shortlist.csv' and returns a DataFrame.
     """
-    # Read tickers from file
-    with open("tickers.txt", "r") as file:
-        tickers = [line.strip() for line in file]
+    # Read tickers and keywords from CSV
+    try:
+        tickers_df = pd.read_csv("./data/tickers.csv")
+        tickers = tickers_df["Ticker"].tolist()
+        keywords = tickers_df["Keyword"].tolist()
+    except Exception as e:
+        print(f"Error reading tickers file: {e}")
+        return pd.DataFrame()
+
+    # Check if we need to compute momentum scores
+    if should_run_fomo_computation():
+        print("Computing new momentum scores...")
+        momentum_results = []
+        for ticker, keyword in zip(tickers, keywords):
+            try:
+                result = compute_momentum_score(ticker)
+                momentum_results.append({
+                    "ticker": ticker,
+                    "momentum_score": result
+                })
+            except Exception as e:
+                print(f"Error computing momentum for {ticker}: {e}")
+                momentum_results.append({
+                    "ticker": ticker,
+                    "momentum_score": 10
+                })
+        save_fomo_results(momentum_results)
+    else:
+        print("Using cached momentum scores...")
+        momentum_results = load_fomo_results()
+        if momentum_results is None:
+            print("No cached results available, computing new momentum scores...")
+            momentum_results = []
+            for ticker, keyword in zip(tickers, keywords):
+                try:
+                    result = compute_momentum_score(ticker)
+                    momentum_results.append({
+                        "ticker": ticker,
+                        "momentum_score": result
+                    })
+                except Exception as e:
+                    print(f"Error computing momentum for {ticker}: {e}")
+                    momentum_results.append({
+                        "ticker": ticker,
+                        "momentum_score": 10
+                    })
+            save_fomo_results(momentum_results)
+
+    # Create momentum dictionary using tickers and momentum_results
+    momentum_dict = {}
+    for ticker, result in zip(tickers, momentum_results):
+        momentum_dict[ticker] = result
 
     # Initialize an empty list to store data
     data = []
 
     # Collect data for each company
-    for ticker in tickers:
+    for ticker, keyword in zip(tickers, keywords):
         try:
             stock = yf.Ticker(ticker)
 
@@ -250,9 +521,13 @@ def fetch_market_data():
             except Exception as e:
                 print(f"Error fetching quarterly EPS for {ticker}: {e}")
 
+            # Get momentum score from cache
+            momentum_score = momentum_dict.get(ticker, 10)
+
             # Append all data
             data.append({
                 "Ticker": ticker,
+                "Keyword": keyword,
                 "LAST": last_price,
                 "12M Low": trailing_low,
                 "12M High": trailing_high,
@@ -268,6 +543,7 @@ def fetch_market_data():
                 "EPS Q-2": eps_values[2],
                 "EPS Q-1": eps_values[1],
                 "EPS Q0": eps_values[0],
+                "Momentum Score": momentum_score
             })
 
         except Exception as e:
@@ -284,7 +560,19 @@ def fetch_market_data():
     df["Max EPS Past"] = df[["EPS Q-1", "EPS Q-2", "EPS Q-3", "EPS Q-4"]].max(axis=1)
 
     # Convert Column_A to numeric type
-    for col in ["12M Low", "12M High", "P/E", "fP/E", "REV GRW", "BETA", "EPS Q-4", "EPS Q-3", "EPS Q-2", "EPS Q-1", "EPS Q0"]:
+    numeric_columns = ["12M Low", 
+                    "12M High", 
+                    "Momentum Score", 
+                    "P/E", 
+                    "fP/E", 
+                    "REV GRW", 
+                    "BETA", 
+                    "EPS Q-4", 
+                    "EPS Q-3", 
+                    "EPS Q-2", 
+                    "EPS Q-1", 
+                    "EPS Q0"]
+    for col in numeric_columns:
         df[col] = pd.to_numeric(df[col], errors="coerce")
     
     return df
@@ -295,7 +583,7 @@ app = dash.Dash(__name__)
 # Layout of the app
 app.layout = html.Div([
     html.H1(
-        "Watchlist Dashboard",
+        "Equities Dashboard",
         style={
             'textAlign': 'center',
             'fontFamily': 'Tahoma',
@@ -345,6 +633,23 @@ app.layout = html.Div([
 def update_table(n_intervals):
     # Fetch the latest data
     df = fetch_market_data()
+
+    # Calculate momentum scores for each ticker
+    momentum_scores = {}
+    for ticker in df['Ticker']:
+        momentum_scores[ticker] = compute_momentum_score(ticker)
+
+    # Update the DataFrame with momentum scores
+    df['Momentum'] = df['Ticker'].map(momentum_scores)
+
+    # Reorder columns to place Momentum Score after 12M High
+    column_order = [
+        "Ticker", "Keyword", "LAST", 
+        "% CHG", "Vol", "Momentum", 
+        "12M Low", "12M High", "P/E", "fP/E", "REV GRW", "BETA", "10D Vol", 
+        "EPS Q-4", "EPS Q-3", "EPS Q-2", "EPS Q-1", "EPS Q0"
+    ]
+    df = df[column_order]
 
     # Prepare the Fear and Greed Index data
     fear_greed_data = calculate_fear_and_greed(start_date="2021-12-01", end_date=datetime.now().strftime("%Y-%m-%d"))
@@ -523,6 +828,22 @@ def update_table(n_intervals):
                 },
                 "backgroundColor": "green",
                 "color": "white",
+            },
+            {
+                'if': {
+                    'column_id': 'Momentum',
+                    'filter_query': '{Momentum} >= 20',
+                },
+                'backgroundColor': 'green',
+                'color': 'white',
+            },
+            {
+                'if': {
+                    'column_id': 'Momentum',
+                    'filter_query': '{Momentum} <= -20',
+                },
+                'backgroundColor': 'red',
+                'color': 'white',
             }
         ]
     )
