@@ -294,7 +294,7 @@ app = dash.Dash(__name__)
 # Layout of the app
 app.layout = html.Div([
     html.H1(
-        "Watchlist Dashboard",
+        "Equities Dashboard",
         style={
             'textAlign': 'center',
             'fontFamily': 'Tahoma',
