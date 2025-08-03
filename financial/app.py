@@ -533,4 +533,4 @@ def update_table(n_intervals):
 
 # Run the app
 if __name__ == "__main__":
-    app.run_server(debug=True)
+    app.run(debug=True, port=8888, host="0.0.0.0")
