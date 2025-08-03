@@ -14,7 +14,7 @@ import json
 import os
 from pytz import timezone
 
-REFRESH_CYCLE = 30 # in minutes
+REFRESH_CYCLE = 60 # in minutes
 FEAR_AND_GREED_SMOOTHING_WINDOW = 10 # number of days to get smoother sentiment
 CACHE_FILE = "./data/fomo_index_cache.json"
 PACIFIC_TIME = timezone('US/Pacific')
@@ -153,7 +153,7 @@ def compute_momentum_score(ticker):
         # Check if data is empty
         if data.empty:
             print(f"No data available for {ticker}")
-            momentum_score = 10
+            momentum_score = 0
         else:
             # Get close prices
             close_prices = data['Close'].dropna()
@@ -161,7 +161,7 @@ def compute_momentum_score(ticker):
             # Check if we have enough valid data points
             if len(close_prices) < 2:
                 print(f"Not enough valid data points for {ticker}")
-                momentum_score = 10
+                momentum_score = 0
             else:
                 # Get first and last valid prices
                 start_price = float(close_prices.iloc[0])
@@ -392,18 +392,31 @@ def fetch_market_data():
         print("Computing new momentum scores...")
         momentum_results = []
         for ticker, keyword in zip(tickers, keywords):
-            try:
-                result = compute_momentum_score(ticker)
-                momentum_results.append({
-                    "ticker": ticker,
-                    "momentum_score": result
-                })
-            except Exception as e:
-                print(f"Error computing momentum for {ticker}: {e}")
-                momentum_results.append({
-                    "ticker": ticker,
-                    "momentum_score": 10
-                })
+            max_retries = 3
+            base_delay = 5  # Base delay in seconds
+            for attempt in range(max_retries):
+                try:
+                    result = compute_momentum_score(ticker)
+                    momentum_results.append({
+                        "ticker": ticker,
+                        "momentum_score": result
+                    })
+                    # Add delay between requests
+                    time.sleep(2)  # 2 second delay between momentum calculations
+                    break  # Success, exit retry loop
+                except Exception as e:
+                    if "Too Many Requests" in str(e) and attempt < max_retries - 1:
+                        delay = base_delay * (2 ** attempt)  # Exponential backoff
+                        print(f"Rate limited for {ticker}. Retrying after {delay} seconds (attempt {attempt + 1}/{max_retries})")
+                        time.sleep(delay)
+                    else:
+                        print(f"Error computing momentum for {ticker}: {e}")
+                        momentum_results.append({
+                            "ticker": ticker,
+                            "momentum_score": 10
+                        })
+                        time.sleep(2)  # Delay even on error
+                        break
         save_fomo_results(momentum_results)
     else:
         print("Using cached momentum scores...")
@@ -412,142 +425,168 @@ def fetch_market_data():
             print("No cached results available, computing new momentum scores...")
             momentum_results = []
             for ticker, keyword in zip(tickers, keywords):
-                try:
-                    result = compute_momentum_score(ticker)
-                    momentum_results.append({
-                        "ticker": ticker,
-                        "momentum_score": result
-                    })
-                except Exception as e:
-                    print(f"Error computing momentum for {ticker}: {e}")
-                    momentum_results.append({
-                        "ticker": ticker,
-                        "momentum_score": 10
-                    })
+                max_retries = 3
+                base_delay = 5  # Base delay in seconds
+                for attempt in range(max_retries):
+                    try:
+                        result = compute_momentum_score(ticker)
+                        momentum_results.append({
+                            "ticker": ticker,
+                            "momentum_score": result
+                        })
+                        time.sleep(2)  # 2 second delay between momentum calculations
+                        break  # Success, exit retry loop
+                    except Exception as e:
+                        if "Too Many Requests" in str(e) and attempt < max_retries - 1:
+                            delay = base_delay * (2 ** attempt)  # Exponential backoff
+                            print(f"Rate limited for {ticker}. Retrying after {delay} seconds (attempt {attempt + 1}/{max_retries})")
+                            time.sleep(delay)
+                        else:
+                            print(f"Error computing momentum for {ticker}: {e}")
+                            momentum_results.append({
+                                "ticker": ticker,
+                                "momentum_score": 10
+                            })
+                            time.sleep(2)  # Delay even on error
+                            break
             save_fomo_results(momentum_results)
 
     # Create momentum dictionary using tickers and momentum_results
     momentum_dict = {}
     for ticker, result in zip(tickers, momentum_results):
-        momentum_dict[ticker] = result
+        momentum_dict[ticker] = result["momentum_score"]
 
     # Initialize an empty list to store data
     data = []
 
     # Collect data for each company
     for ticker, keyword in zip(tickers, keywords):
-        try:
-            stock = yf.Ticker(ticker)
-
-            # Basic stock information
-            company_name = stock.info.get("longName", "N/A")
-            pe_ratio = stock.info.get("trailingPE", "N/A")
-            forward_pe = stock.info.get("forwardPE", "N/A")
-            revenue_growth = stock.info.get("revenueGrowth", "N/A")
-            beta = stock.info.get("beta", "N/A")
-
-            # Fetch trailing 12-month high and low
+        max_retries = 3
+        base_delay = 5  # Base delay in seconds
+        for attempt in range(max_retries):
             try:
-                historical_data = stock.history(period="1y")
-                if not historical_data.empty:
-                    trailing_high = historical_data["High"].max()
-                    trailing_low = historical_data["Low"].min()
-                else:
+                # Add delay between ticker requests
+                time.sleep(2)  # 2 second delay between ticker data fetches
+                
+                stock = yf.Ticker(ticker)
+
+                # Basic stock information
+                company_name = stock.info.get("longName", "N/A")
+                pe_ratio = stock.info.get("trailingPE", "N/A")
+                forward_pe = stock.info.get("forwardPE", "N/A")
+                revenue_growth = stock.info.get("revenueGrowth", "N/A")
+                beta = stock.info.get("beta", "N/A")
+
+                # Fetch trailing 12-month high and low
+                try:
+                    historical_data = stock.history(period="1y")
+                    if not historical_data.empty:
+                        trailing_high = historical_data["High"].max()
+                        trailing_low = historical_data["Low"].min()
+                    else:
+                        trailing_high = "N/A"
+                        trailing_low = "N/A"
+                except Exception as e:
+                    print(f"Error fetching historical data for {ticker}: {e}")
                     trailing_high = "N/A"
                     trailing_low = "N/A"
-            except Exception as e:
-                print(f"Error fetching historical data for {ticker}: {e}")
-                trailing_high = "N/A"
-                trailing_low = "N/A"
 
-            # Fetch last price and calculate percentage change since market open
-            try:
-                last_data = stock.history(period="1d")  # Fetch data for today
-                if not last_data.empty:
-                    last_price = last_data["Close"].iloc[-1]
-                else:
-                    last_price = "N/A"
-                
-                # Fetch historical data (ensure enough data is retrieved)
-                hist = stock.history(period="5d")  # Fetch last 5 days to ensure a valid close price
-
-                # Ensure there is enough data and get the last valid close price
-                if "Close" in hist.columns and len(hist) > 1:
-                    last_close_price = hist["Close"].dropna().iloc[-2]  # Get the most recent valid close price
-                else:
-                    last_close_price = None  # Handle missing data case
-
-                # Set the open price using the last close price
-                open_price = last_close_price if last_close_price is not None else "N/A"
-
-                if last_price != "N/A" and open_price != "N/A" and open_price != 0:
-                    percent_change = ((last_price - open_price) / open_price) * 100
-                else:
-                    percent_change = "N/A"
-            except Exception as e:
-                print(f"Error fetching price data for {ticker}: {e}")
-                last_price = "N/A"
-                percent_change = "N/A"
-
-            try:
-                # Fetch historical data for the past 10 trading days
-                hist = stock.history(period="1mo")  # Fetch 2 weeks of data to ensure at least 10 trading days
-                if hist.empty:
-                    return {"error": f"No trading data available for {ticker}"}
-                
-                # Current trading volume (real-time)
-                current_volume = int(stock.info.get('volume', 'N/A')/1000000.0)
-                
-                # Calculate average volume over the past 10 trading days
-                avg_volume_10d = int(hist['Volume'].tail(10).mean()/1000000.0)
-            except Exception as e:
-                print(f"Error fetching price data for {ticker}: {e}")
-                current_volume = "N/A"
-                avg_volume_10d = "N/A"
-
-            # Fetch quarterly diluted EPS
-            eps_values = ["N/A"] * 5  # Default if no data available
-            try:
-                # Get quarterly financial data
-                quarterly_financials = stock.quarterly_financials
-
-                # Check if diluted EPS is available in the data
-                if "Diluted EPS" in quarterly_financials.index:
-                    if len(quarterly_financials.loc["Diluted EPS"]) < 5:
-                        esp_values_short = quarterly_financials.loc["Diluted EPS"].tolist()
-                        eps_values =  esp_values_short + ["N/A"] * (5 - len(esp_values_short))
+                # Fetch last price and calculate percentage change since market open
+                try:
+                    last_data = stock.history(period="1d")  # Fetch data for today
+                    if not last_data.empty:
+                        last_price = last_data["Close"].iloc[-1]
                     else:
-                        eps_values = quarterly_financials.loc["Diluted EPS"].iloc[:5].tolist()
+                        last_price = "N/A"
+                    
+                    # Fetch historical data (ensure enough data is retrieved)
+                    hist = stock.history(period="5d")  # Fetch last 5 days to ensure a valid close price
+
+                    # Ensure there is enough data and get the last valid close price
+                    if "Close" in hist.columns and len(hist) > 1:
+                        last_close_price = hist["Close"].dropna().iloc[-2]  # Get the most recent valid close price
+                    else:
+                        last_close_price = None  # Handle missing data case
+
+                    # Set the open price using the last close price
+                    open_price = last_close_price if last_close_price is not None else "N/A"
+
+                    if last_price != "N/A" and open_price != "N/A" and open_price != 0:
+                        percent_change = ((last_price - open_price) / open_price) * 100
+                    else:
+                        percent_change = "N/A"
+                except Exception as e:
+                    print(f"Error fetching price data for {ticker}: {e}")
+                    last_price = "N/A"
+                    percent_change = "N/A"
+
+                try:
+                    # Fetch historical data for the past 10 trading days
+                    hist = stock.history(period="1mo")  # Fetch 2 weeks of data to ensure at least 10 trading days
+                    if hist.empty:
+                        return {"error": f"No trading data available for {ticker}"}
+                    
+                    # Current trading volume (real-time)
+                    current_volume = int(stock.info.get('volume', 'N/A')/1000000.0)
+                    
+                    # Calculate average volume over the past 10 trading days
+                    avg_volume_10d = int(hist['Volume'].tail(10).mean()/1000000.0)
+                except Exception as e:
+                    print(f"Error fetching price data for {ticker}: {e}")
+                    current_volume = "N/A"
+                    avg_volume_10d = "N/A"
+
+                # Fetch quarterly diluted EPS
+                eps_values = ["N/A"] * 5  # Default if no data available
+                try:
+                    # Get quarterly financial data
+                    quarterly_financials = stock.quarterly_financials
+
+                    # Check if diluted EPS is available in the data
+                    if "Diluted EPS" in quarterly_financials.index:
+                        if len(quarterly_financials.loc["Diluted EPS"]) < 5:
+                            esp_values_short = quarterly_financials.loc["Diluted EPS"].tolist()
+                            eps_values =  esp_values_short + ["N/A"] * (5 - len(esp_values_short))
+                        else:
+                            eps_values = quarterly_financials.loc["Diluted EPS"].iloc[:5].tolist()
+                except Exception as e:
+                    print(f"Error fetching quarterly EPS for {ticker}: {e}")
+
+                # Get momentum score from cache
+                momentum_score = momentum_dict.get(ticker, 10)
+
+                # Append all data
+                data.append({
+                    "Ticker": ticker,
+                    "Keyword": keyword,
+                    "LAST": last_price,
+                    "12M Low": trailing_low,
+                    "12M High": trailing_high,
+                    "% CHG": percent_change,
+                    "Vol": current_volume,
+                    "10D Vol": avg_volume_10d,
+                    "P/E": pe_ratio,
+                    "fP/E": forward_pe,
+                    "REV GRW": revenue_growth,
+                    "BETA": beta,
+                    "EPS Q-4": eps_values[4],
+                    "EPS Q-3": eps_values[3],
+                    "EPS Q-2": eps_values[2],
+                    "EPS Q-1": eps_values[1],
+                    "EPS Q0": eps_values[0],
+                    "Momentum Score": momentum_score
+                })
+                break  # Success, exit retry loop
             except Exception as e:
-                print(f"Error fetching quarterly EPS for {ticker}: {e}")
-
-            # Get momentum score from cache
-            momentum_score = momentum_dict.get(ticker, 10)
-
-            # Append all data
-            data.append({
-                "Ticker": ticker,
-                "Keyword": keyword,
-                "LAST": last_price,
-                "12M Low": trailing_low,
-                "12M High": trailing_high,
-                "% CHG": percent_change,
-                "Vol": current_volume,
-                "10D Vol": avg_volume_10d,
-                "P/E": pe_ratio,
-                "fP/E": forward_pe,
-                "REV GRW": revenue_growth,
-                "BETA": beta,
-                "EPS Q-4": eps_values[4],
-                "EPS Q-3": eps_values[3],
-                "EPS Q-2": eps_values[2],
-                "EPS Q-1": eps_values[1],
-                "EPS Q0": eps_values[0],
-                "Momentum Score": momentum_score
-            })
-
-        except Exception as e:
-            print(f"Error fetching data for {ticker}: {e}")
+                if "Too Many Requests" in str(e) and attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt)  # Exponential backoff
+                    print(f"Rate limited for {ticker}. Retrying after {delay} seconds (attempt {attempt + 1}/{max_retries})")
+                    time.sleep(delay)
+                else:
+                    print(f"Error fetching data for {ticker}: {e}")
+                    # Add extra delay after an error
+                    time.sleep(5)  # 5 second delay after an error
+                    break
 
     # Load data into a DataFrame
     df = pd.DataFrame(data)
