@@ -1,3 +1,44 @@
+"""
+Financial Market Dashboard - Real-time Stock Analysis and Fear & Greed Index Visualization
+
+This Dash web application provides a comprehensive financial market dashboard that displays
+real-time stock data, technical indicators, and market sentiment analysis. The dashboard
+fetches live market data from Yahoo Finance API and presents it in an interactive table
+format with conditional formatting and visualizations.
+
+Key Features:
+- Real-time stock data fetching for multiple tickers
+- Interactive data table with conditional formatting
+- Fear & Greed Index visualization with time series and histogram plots
+- Automatic data refresh every 30 minutes
+- Technical indicators including P/E ratios, volume analysis, and EPS tracking
+- Put/Call ratio analysis for market sentiment
+- Responsive web interface with modern styling
+
+Data Sources:
+- Yahoo Finance API for stock prices and financial metrics
+- CNN Fear & Greed Index for market sentiment
+- Custom technical indicators and calculations
+
+Usage:
+    python app.py
+
+The application will start a web server on port 8888 and be accessible at:
+    http://localhost:8888
+
+Dependencies:
+- dash: Web framework for building analytical web applications
+- yfinance: Yahoo Finance API wrapper
+- pandas: Data manipulation and analysis
+- plotly: Interactive plotting library
+- selenium: Web scraping for Fear & Greed Index
+- numpy: Numerical computing
+
+Author: Gopal Erinjippurath
+Version: 1.0
+Last Updated: 2025
+"""
+
 import dash
 from dash import dcc, html, Input, Output, dash_table
 import yfinance as yf
@@ -286,6 +327,9 @@ def fetch_market_data():
     for col in ["12M Low", "12M High", "P/E", "fP/E", "REV GRW", "BETA", "EPS Q-4", "EPS Q-3", "EPS Q-2", "EPS Q-1", "EPS Q0"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
     
+    # Sort by % CHG column from lowest to highest
+    df = df.sort_values(by="% CHG", ascending=True)
+    
     return df
 
 # Initialize the Dash app
@@ -346,7 +390,7 @@ def update_table(n_intervals):
     df = fetch_market_data()
 
     # Prepare the Fear and Greed Index data
-    fear_greed_data = calculate_fear_and_greed(start_date="2021-12-01", end_date=datetime.now().strftime("%Y-%m-%d"))
+    fear_greed_data = calculate_fear_and_greed(start_date="2023-08-01", end_date=datetime.now().strftime("%Y-%m-%d"))
     smoothed_data = calculate_smoothed_fear_and_greed(fear_greed_data, window=FEAR_AND_GREED_SMOOTHING_WINDOW)
 
     # Create a time series plot for the smoothed Fear and Greed Index
