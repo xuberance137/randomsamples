@@ -40,7 +40,7 @@ Last Updated: 2025
 """
 
 import dash
-from dash import dcc, html, Input, Output, dash_table
+from dash import dcc, html, Input, Output, dash_table, State
 import yfinance as yf
 import pandas as pd
 from datetime import datetime
@@ -327,8 +327,8 @@ def fetch_market_data():
     for col in ["12M Low", "12M High", "P/E", "fP/E", "REV GRW", "BETA", "EPS Q-4", "EPS Q-3", "EPS Q-2", "EPS Q-1", "EPS Q0"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
     
-    # Sort by % CHG column from lowest to highest
-    df = df.sort_values(by="% CHG", ascending=True)
+    # Note: Sorting is now handled in update_table function
+    # df = df.sort_values(by="% CHG", ascending=True)  # Removed default sorting
     
     return df
 
@@ -346,6 +346,7 @@ app.layout = html.Div([
             'marginBottom': '20px'
         }
     ),
+    
     html.Div(
         id="last-updated",
         style={
@@ -367,7 +368,36 @@ app.layout = html.Div([
             dcc.Graph(id="histogram-plot", style={"width": "48%"})
         ]
     ),
+
+    # Add sort button in the top right
+    html.Div([
+        html.Button(
+            id='sort-button',
+            children='Sort by % Change',
+            style={
+                'position': 'absolute',
+                'top': '10px',
+                'right': '10px',
+                'backgroundColor': '#3498db',
+                'color': 'white',
+                'border': 'none',
+                'padding': '10px 20px',
+                'borderRadius': '5px',
+                'cursor': 'pointer',
+                'fontFamily': 'Tahoma',
+                'fontSize': '14px'
+            }
+        )
+    ], style={'position': 'relative', 'height': '50px'}),
+
     html.Div(id="table-container"),
+    
+    # Store component to track sort state
+    dcc.Store(id='sort-state', data=False),
+    
+    # Store component to cache fetched data
+    dcc.Store(id='cached-data', data=None),
+    
     dcc.Interval(
         id="interval-component",
         interval= REFRESH_CYCLE * 60 * 1000,  # REFRESH_CYCLE minutes in milliseconds
@@ -375,19 +405,58 @@ app.layout = html.Div([
     )
 ])
 
-# Callback to update the table and timestamp
+# Callback to handle sort button clicks
 @app.callback(
-    [
-        Output("table-container", "children"),
-        Output("last-updated", "children"),
-        Output("time-series-plot", "figure"),
-        Output("histogram-plot", "figure")
-    ],
-    [Input("interval-component", "n_intervals")]
+    Output('sort-state', 'data'),
+    Input('sort-button', 'n_clicks'),
+    State('sort-state', 'data')
 )
-def update_table(n_intervals):
+def toggle_sort(n_clicks, current_sort_state):
+    if n_clicks is None:
+        return False
+    return not current_sort_state
+
+# Callback to update button text based on sort state
+@app.callback(
+    Output('sort-button', 'children'),
+    Input('sort-state', 'data')
+)
+def update_button_text(sort_state):
+    return 'Original Order' if sort_state else 'Sort by Change Today'
+
+# Callback to fetch and cache data (triggered by interval)
+@app.callback(
+    Output('cached-data', 'data'),
+    Input('interval-component', 'n_intervals')
+)
+def fetch_and_cache_data(n_intervals):
     # Fetch the latest data
     df = fetch_market_data()
+    # Convert DataFrame to dict for storage
+    return df.to_dict('records')
+
+# Callback to update the table (triggered by sort button or interval)
+@app.callback(
+    [Output("table-container", "children"),
+     Output("last-updated", "children"),
+     Output("time-series-plot", "figure"),
+     Output("histogram-plot", "figure")],
+    [Input("interval-component", "n_intervals"),
+     Input('sort-state', 'data'),
+     Input('cached-data', 'data')]
+)
+def update_table(n_intervals, sort_data, cached_data):
+    # Use cached data if available, otherwise fetch new data
+    if cached_data is not None:
+        df = pd.DataFrame(cached_data)
+    else:
+        df = fetch_market_data()
+
+    # Sort by % CHG column from lowest to highest if sort_data is True
+    if sort_data:
+        df = df.sort_values(by="% CHG", ascending=True)
+    # If sort_data is False, keep the original order from fetch_market_data
+    # (which is now in the order the data was fetched, not pre-sorted)
 
     # Prepare the Fear and Greed Index data
     fear_greed_data = calculate_fear_and_greed(start_date="2023-08-01", end_date=datetime.now().strftime("%Y-%m-%d"))
@@ -577,4 +646,4 @@ def update_table(n_intervals):
 
 # Run the app
 if __name__ == "__main__":
-    app.run(debug=True, port=8888, host="0.0.0.0")
+    app.run(debug=True, port=5555, host="0.0.0.0")
